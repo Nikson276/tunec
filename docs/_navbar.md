@@ -2,7 +2,7 @@
 
 * Intro
 
-  * [Главная](./index.md)
+  * [Главная](/)
   * [Схема clickhouse](./clickhouse-schema.md)
   * [Deployment](./deployment.md)
   * [Event Schema](./event-schema.md)
