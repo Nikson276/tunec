@@ -913,13 +913,10 @@ docker stats clickhouse-node1 clickhouse-node2 clickhouse-node3 clickhouse-node4
 
 ### ✅ План перехода в облако
 
-Ты **абсолютно прав**: пора на облачный хостинг.  
-Лучше разделить нагрузку:
-
 | Машина | Назначение | Рекомендуемая конфигурация |
 |--------|------------|---------------------------|
-| **VM-1** | **Все сервисы**: FastAPI, Kafka, ClickHouse, ZooKeeper, Pyroscope | **8–16 vCPU, 32–64 GiB RAM, NVMe SSD 500+ GB** |
-| **VM-2** | **Только k6 (нагрузка)** | **4–8 vCPU, 16 GiB RAM** |
+| **VM-1** | **Все сервисы**: FastAPI, Kafka, ClickHouse, ZooKeeper, Pyroscope | **8 x 3.3 ГГц CPU • 16 ГБ RAM • 80 ГБ NVMe** |
+| **VM-2** | **Только k6 (нагрузка)** | **4 vCPU, 16 GiB RAM** |
 
 ### Почему так?
 
@@ -1132,3 +1129,242 @@ Query id: 9420634e-6c7b-4c50-8e56-4b6bdc30d745
 1 row in set. Elapsed: 0.216 sec. Processed 1.95 million rows, 43.43 MB (9.05 million rows/s., 201.36 MB/s.)
 Peak memory usage: 204.72 MiB.
 ```
+
+## Финальные тесты в облаке
+
+Сервер:
+
+| Машина | Назначение | Рекомендуемая конфигурация |
+|--------|------------|---------------------------|
+| **VM-1** | **Все сервисы**: FastAPI, Kafka, ClickHouse, ZooKeeper, Pyroscope | **8 x 3.3 ГГц CPU • 16 ГБ RAM • 80 ГБ NVMe** |
+| **VM-2** | **Только k6 (нагрузка)** | **4 vCPU, 16 GiB RAM** |
+
+Сервис:
+
+```yaml
+  fastapi:
+    build: .
+    container_name: fastapi
+    ports:
+      - "8000:8000"
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka-0:9092
+      - KAFKA_TOPIC=nikson-test
+      - CLICKHOUSE_HOST=clickhouse-node1
+      - CLICKHOUSE_PORT=8123
+    networks:
+      - ess-net
+    depends_on:
+      init-schemas:
+        condition: service_completed_successfully
+    command: ["uvicorn", "ess.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "8"]
+```
+
+
+### Пробный прогон 350 VU
+
+![alt text](image.png)
+
+```bash
+  scenarios: (100.00%) 1 scenario, 350 max VUs, 4m0s max duration (incl. graceful stop):
+          * default: Up to 350 looping VUs for 3m30s over 4 stages (gracefulRampDown: 30s, gracefulStop: 30s)
+
+  █ THRESHOLDS 
+
+    http_reqs
+    ✓ 'count>=3500' count=2076204
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 2076204 9885.437453/s
+```
+
+clickhouse lag
+
+```bash
+SELECT
+    count() AS total,
+    avg(dateDiff('second', ingest_time, store_time)) AS avg_e2e_sec,
+    quantiles(0.5, 0.9, 0.95, 0.99)(dateDiff('second', ingest_time, store_time)) AS p_latencies_sec
+FROM example.events
+WHERE store_time IS NOT NULL
+
+Query id: c31cad5a-433c-492b-a693-9acb6867d2a7
+
+┌───total─┬────────avg_e2e_sec─┬─p_latencies_sec───┐
+│ 2076204 │ 242.42595236306258 │ [250,365,382,396]
+```
+
+### Попытка нагрузить сервер до отказов
+
+#### 3500 VU 4 min
+
+![alt text](image-1.png)
+
+```bash
+     scenarios: (100.00%) 1 scenario, 3500 max VUs, 4m0s max duration (incl. graceful stop):
+              * default: Up to 3500 looping VUs for 3m30s over 4 stages (gracefulRampDown: 30s, gracefulStop: 30s)
+
+
+
+  █ THRESHOLDS 
+
+    http_reqs
+    ✓ 'count>=3500' count=2413557
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 2413557 11470.967804/s
+    checks_succeeded...: 100.00% 2413557 out of 2413557
+    checks_failed......: 0.00%   0 out of 2413557
+```
+
+clickhouse lag
+
+```bash
+SELECT
+    count() AS total,
+    avg(dateDiff('second', ingest_time, store_time)) AS avg_e2e_sec,
+    quantiles(0.5, 0.9, 0.95, 0.99)(dateDiff('second', ingest_time, store_time)) AS p_latencies_sec
+FROM example.events
+WHERE store_time IS NOT NULL
+
+Query id: bde6ff5a-1d47-49c3-9b72-f35871afa025
+
+┌───total─┬────────avg_e2e_sec─┬─p_latencies_sec───┐
+│ 4489761 │ 260.22765176141894 │ [266,392,418,446] │
+└─────────┴────────────────────┴───────────────────┘
+```
+
+#### 50000 VUs 4 min
+
+![alt text](image-2.png)
+
+```bash
+     scenarios: (100.00%) 1 scenario, 5000 max VUs, 4m0s max duration (incl. graceful stop):
+              * default: Up to 5000 looping VUs for 3m30s over 4 stages (gracefulRampDown: 30s, gracefulStop: 30s)
+
+
+
+  █ THRESHOLDS 
+
+    http_reqs
+    ✓ 'count>=3500' count=2501160
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 2501160 11900.677557/s
+    checks_succeeded...: 100.00% 2501160 out of 2501160
+    checks_failed......: 0.00%   0 out of 2501160
+```
+
+
+![alt text](image-3.png)
+
+```bash
+SELECT
+    count() AS total,
+    avg(dateDiff('second', ingest_time, store_time)) AS avg_e2e_sec,
+    quantiles(0.5, 0.9, 0.95, 0.99)(dateDiff('second', ingest_time, store_time)) AS p_latencies_sec
+FROM example.events
+WHERE store_time IS NOT NULL
+
+Query id: 8a77d883-8f70-46a7-8afb-512e9513348a
+
+┌───total─┬────────avg_e2e_sec─┬─p_latencies_sec───┐
+│ 9005141 │ 266.68102831482594 │ [276,403,432,465] │
+└─────────┴────────────────────┴───────────────────
+```
+
+#### 10000 VUs 5m30s v1
+
+```bash
+WARN[0333] Request Failed                                error="Post \"http://31.130.150.129:8000/events/\": EOF"
+WARN[0333] Request Failed                                error="Post \"http://31.130.150.129:8000/events/\": EOF"
+WARN[0333] Request Failed                                error="Post \"http://31.130.150.129:8000/events/\": EOF"
+
+
+  █ THRESHOLDS 
+
+    http_reqs
+    ✓ 'count>=20000' count=3282083
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 3282083 9904.477145/s
+    checks_succeeded...: 94.27%  3094212 out of 3282083
+    checks_failed......: 5.72%   187871 out of 3282083
+
+    ✗ status equals 200
+      ↳  94% — ✓ 3094212 / ✗ 187871
+```
+
+![alt text](image-4.png)
+
+#### 10000 VUs 5m30s v2
+
+![alt text](image-5.png)
+
+```bash
+WARN[0331] Request Failed                                error="Post \"http://31.130.150.129:8000/events/\": http: server closed idle connection"
+WARN[0332] Request Failed                                error="Post \"http://31.130.150.129:8000/events/\": EOF"
+WARN[0332] Request Failed                                error="Post \"http://31.130.150.129:8000/events/\": EOF"
+WARN[0332] Request Failed                                error="Post \"http://31.130.150.129:8000/events/\": EOF"
+
+
+  █ THRESHOLDS 
+
+    http_reqs
+    ✓ 'count>=20000' count=2998324
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 2998324 9080.479732/s
+    checks_succeeded...: 89.63%  2687561 out of 2998324
+    checks_failed......: 10.36%  310763 out of 2998324
+
+    ✗ status equals 200
+      ↳  89% — ✓ 2687561 / ✗ 310763
+```
+![alt text](image-6.png)
+
+```bash
+SELECT
+    count() AS total,
+    avg(dateDiff('second', ingest_time, store_time)) AS avg_e2e_sec,
+    quantiles(0.5, 0.9, 0.95, 0.99)(dateDiff('second', ingest_time, store_time)) AS p_latencies_sec
+FROM example.events
+WHERE store_time IS NOT NULL
+
+Query id: 413f004a-d6c1-45b1-a97d-e13c0094ca3f
+
+┌────total─┬────────avg_e2e_sec─┬─p_latencies_sec─────────────────┐
+│ 14644353 │ 296.28542387635696 │ [308,447,483,542.0900000000001] │
+```
+
+Запросы к АПИ после теста не работают 
+
+![alt text](image-7.png)
+
+```bash
+"detail": "Code: 102. Unexpected packet from server clickhouse-node1:8123 (expected Hello or Exception, got Unknown packet)"
+```
+
+Потом я отключил clickhouse-node1 и проверил, работает ли репликация и вторая нода
+
+= Работает, но только при запросах из контейнера, данные одинаковые везде, это хорошо.
+А вот АПИ падает с кодом 209
+{
+  "detail": "Code: 209. (clickhouse-node1:8123)"
+}
+Видимо без мастер-ноды 1 ничего не работает: ведь дистрибутивная таблица работает на ней
+
+Возможно из-за хоста на первую ноду
+![alt text](image-8.png)
+
+ВОПРОС: Как сделать конфиг так: чтобы в случае отказа сервис ходил в живую ноду за данными, выходит что со стороны БД это работает, а сам сервис не знает о других нодах, если мастер-нода лежит.
